@@ -7,6 +7,12 @@ LSM6DS3 myIMU(I2C_MODE, 0x6A);  // IMU at I2C address 0x6A
 float angleX = 0, angleY = 0;  // Estimated angles
 unsigned long prevTime;
 
+#define SLOUCH_THRESHOLD 10.0  // Angle deviation threshold (adjust as needed)
+#define SLOUCH_TIME 3000       // Milliseconds of sustained slouch before detection
+unsigned long slouchStartTime = 0;
+bool isSlouching = false;
+float baselineAngleY = 0;  // Calibrated upright angle
+
 void setup() {
     Serial.begin(9600);
     while (!Serial);
@@ -18,6 +24,8 @@ void setup() {
     }
 
     prevTime = millis();
+    delay(1000);  // Give time for IMU to stabilize
+    calibrateUpright();  // Set initial baseline for upright posture
 }
 
 void loop() {
@@ -46,7 +54,32 @@ void loop() {
     angleX = 0.98 * (angleX + gyroX * dt) + 0.02 * accAngleX;
     angleY = 0.98 * (angleY + gyroY * dt) + 0.02 * accAngleY;
 
-    Serial.println(angleY, 2);
+    // Detect slouching
+    bool slouchState = detectSlouch(angleY);
+
+    Serial.print("AngleY: ");
+    Serial.print(angleY, 2);
+    Serial.print(" | Slouching: ");
+    Serial.println(slouchState ? "YES" : "NO");
 
     delay(100); // Update at ~50Hz
+}
+
+// Function to set baseline angle when upright
+void calibrateUpright() {
+    baselineAngleY = angleY;
+    Serial.println("Upright position calibrated!");
+}
+
+// Function to detect slouching based on deviation
+bool detectSlouch(float angle) {
+    if (abs(angle - baselineAngleY) > SLOUCH_THRESHOLD) {
+        if (slouchStartTime == 0) slouchStartTime = millis();  // Start timing slouch
+        if (millis() - slouchStartTime > SLOUCH_TIME) {
+            return true;
+        }
+    } else {
+        slouchStartTime = 0;  // Reset if posture improves
+    }
+    return false;
 }
