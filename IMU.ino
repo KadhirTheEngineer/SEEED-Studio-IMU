@@ -4,14 +4,20 @@
 
 LSM6DS3 myIMU(I2C_MODE, 0x6A);  // IMU at I2C address 0x6A
 
-float angleX = 0, angleY = 0;  // Estimated angles
+float angleY = 0;  // Estimated angle
 unsigned long prevTime;
 
 #define SLOUCH_THRESHOLD 10.0  // Angle deviation threshold (adjust as needed)
 #define SLOUCH_TIME 3000       // Milliseconds of sustained slouch before detection
 unsigned long slouchStartTime = 0;
-bool isSlouching = false;
 float baselineAngleY = 0;  // Calibrated upright angle
+
+// Kalman Filter Variables
+float Q_angle = 0.01;  // Process noise variance for the accelerometer
+float Q_bias = 0.003;  // Process noise variance for the gyro bias
+float R_measure = 0.03;  // Measurement noise variance
+float angleKalman = 0, bias = 0, rate = 0;
+float P[2][2] = {{0, 0}, {0, 0}};  // Error covariance matrix
 
 void setup() {
     Serial.begin(9600);
@@ -24,8 +30,8 @@ void setup() {
     }
 
     prevTime = millis();
-    delay(1000);  // Give time for IMU to stabilize
-    calibrateUpright();  // Set initial baseline for upright posture
+    delay(2000);  // Allow the IMU to stabilize
+    calibrateUpright();
 }
 
 void loop() {
@@ -39,20 +45,13 @@ void loop() {
     float accZ = myIMU.readFloatAccelZ();
 
     // Read gyroscope values (deg/sec)
-    float gyroX = myIMU.readFloatGyroX();
     float gyroY = myIMU.readFloatGyroY();
 
     // Compute angle from accelerometer
-    float accAngleX = atan2(accY, accZ) * (180.0 / M_PI); // Convert to degrees
     float accAngleY = atan2(-accX, sqrt(accY * accY + accZ * accZ)) * (180.0 / M_PI);
 
-    // Integrate gyroscope to estimate angles
-    angleX += gyroX * dt;
-    angleY += gyroY * dt;
-
-    // Apply complementary filter
-    angleX = 0.98 * (angleX + gyroX * dt) + 0.02 * accAngleX;
-    angleY = 0.98 * (angleY + gyroY * dt) + 0.02 * accAngleY;
+    // Use Kalman filter to estimate the angle
+    angleY = kalmanFilter(accAngleY, gyroY, dt);
 
     // Detect slouching
     bool slouchState = detectSlouch(angleY);
@@ -62,7 +61,7 @@ void loop() {
     Serial.print(" | Slouching: ");
     Serial.println(slouchState ? "YES" : "NO");
 
-    delay(100); // Update at ~50Hz
+    delay(50);  // Update faster (~20Hz) for better responsiveness
 }
 
 // Function to set baseline angle when upright
@@ -82,4 +81,35 @@ bool detectSlouch(float angle) {
         slouchStartTime = 0;  // Reset if posture improves
     }
     return false;
+}
+
+// Kalman Filter for Angle Estimation
+float kalmanFilter(float newAngle, float newRate, float dt) {
+    rate = newRate - bias;
+    angleKalman += dt * rate;
+
+    // Update estimation error covariance
+    P[0][0] += dt * (dt * P[1][1] - P[0][1] - P[1][0] + Q_angle);
+    P[0][1] -= dt * P[1][1];
+    P[1][0] -= dt * P[1][1];
+    P[1][1] += Q_bias * dt;
+
+    // Compute Kalman gain
+    float S = P[0][0] + R_measure;
+    float K[2] = {P[0][0] / S, P[1][0] / S};
+
+    // Update angle and bias
+    float y = newAngle - angleKalman;
+    angleKalman += K[0] * y;
+    bias += K[1] * y;
+
+    // Update error covariance matrix
+    float P00_temp = P[0][0];
+    float P01_temp = P[0][1];
+    P[0][0] -= K[0] * P00_temp;
+    P[0][1] -= K[0] * P01_temp;
+    P[1][0] -= K[1] * P00_temp;
+    P[1][1] -= K[1] * P01_temp;
+
+    return angleKalman;
 }
